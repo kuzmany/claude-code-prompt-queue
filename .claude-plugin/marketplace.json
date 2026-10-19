@@ -1,0 +1,22 @@
+{
+  "name": "prompt-queue",
+  "description": "Prompt queue for Claude Code: park prompts and run them after each task.",
+  "owner": {
+    "name": "Zdeno Kuzmany",
+    "url": "https://github.com/kuzmany"
+  },
+  "plugins": [
+    {
+      "name": "prompt-queue",
+      "source": "./",
+      "description": "Queue prompts with /queue and run them one by one after each task and its background jobs finish.",
+      "category": "productivity",
+      "keywords": [
+        "prompt-queue",
+        "queue",
+        "automation",
+        "productivity"
+      ]
+    }
+  ]
+}
