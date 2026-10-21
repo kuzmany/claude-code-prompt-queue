@@ -184,3 +184,40 @@ test('a failed send does not leave auto stuck', async ($, on) => {
   await clock.advance(1)
   expect(sent).toEqual(['b'])
 })
+
+test('auto clears agents whose end arrives in another session message', async ($, on) => {
+  const clock = mock.clock(on)
+  const sent: string[] = []
+  let agent = 0
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('turn.complete', () => ({ text: '' }))
+  on('tool.call', () => ({ result: { stdout: '' }, text: `Async agent launched. agentId: a${++agent} (internal ID)` }))
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  const endTurn = () =>
+    $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
+
+  await $.command.run({ command: 'queue', args: 'next' })
+  await $.tool.call({ tool: 'Agent', prompt: 'review', description: 'one' })
+  await $.tool.call({ tool: 'Agent', prompt: 'review', description: 'two' })
+  await $.command.run({ command: 'queue-auto', args: '' })
+  await endTurn()
+  await clock.advance(1)
+  expect(sent).toEqual([])
+
+  // A typed prompt that quotes a notice clears nothing.
+  await $.prompt.submit({
+    text: '<agent-message from="a1">\n  [Subagent hand-back] report',
+    origin: { kind: 'composer' },
+  })
+  await $.prompt.submit({
+    text: '<agent-message from="a1">\n  [Subagent hand-back] report\n</agent-message>\n<task-notification><task-id>a2</task-id><status>completed</status></task-notification>',
+    origin: { kind: 'peer' },
+  })
+  await endTurn()
+  await clock.advance(1)
+  expect(sent.at(-1)).toBe('next')
+})

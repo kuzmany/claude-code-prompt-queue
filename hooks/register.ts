@@ -10,7 +10,12 @@ const busy = atom({ plugin: 'prompt-queue', key: 'busy' } as const, false)
 
 const BASH_STARTED = /running in background with ID: (\S+?)\.?\s/
 const AGENT_STARTED = /agentId: ([\w-]+)/
-const FINISHED = /<task-id>([^<]+)<\/task-id>[\s\S]*?<status>(?!running)/
+// A finished job's notice; it stays inside its own <task-notification> block.
+const FINISHED = /<task-id>([^<]+)<\/task-id>(?:(?!<\/task-notification>)[\s\S])*?<status>(?!running)/g
+// A subagent's final report, sent as a message from that agent.
+const HANDED_BACK = /<agent-message from="([^"]+)">\s*\[Subagent hand-back\]/g
+// Job notices arrive on their own or inside another session's message, never in a prompt the user typed.
+const NOTICE_ORIGINS = ['task-notification', 'peer']
 
 const HELP = `/queue <text>     park a prompt
 /queue list       show parked prompts
@@ -101,8 +106,10 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    const id = e.origin.kind === 'task-notification' ? e.text.match(FINISHED)?.[1] : undefined
-    if (id) await setWaiting($, ids => ids.filter(one => one !== id))
+    if (NOTICE_ORIGINS.includes(e.origin.kind)) {
+      const ended = [...e.text.matchAll(FINISHED), ...e.text.matchAll(HANDED_BACK)].map(match => match[1])
+      if (ended.length) await setWaiting($, ids => ids.filter(one => !ended.includes(one)))
+    }
 
     return next(e)
   })
