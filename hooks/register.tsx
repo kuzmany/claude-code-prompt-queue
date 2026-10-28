@@ -17,7 +17,10 @@ const HANDED_BACK = /<agent-message from="([^"]+)">\s*\[Subagent hand-back\]/g
 // Job notices arrive on their own or inside another session's message, never in a prompt the user typed.
 const NOTICE_ORIGINS = ['task-notification', 'peer']
 
-const HELP = `/queue <text>     park a prompt
+const PANE = 'queue'
+
+const HELP = `/queue            open the panel: edit, reorder, run, remove
+/queue <text>     park a prompt
 /queue list       show parked prompts
 /queue run [n]    send prompt n now (default 1)
 /queue drop <n>   remove prompt n
@@ -25,29 +28,30 @@ const HELP = `/queue <text>     park a prompt
 /queue unblock    stop waiting on background jobs
 /queue-auto       toggle: run the queue after each task and its background jobs end`
 
-const showStatus = async ($: Engine) => {
-  const count = (await read($, items)).length
-  const jobs = (await read($, waiting)).length
-  const isAuto = await read($, auto)
-  const text = [
-    count && `${count} queued`,
-    isAuto && 'auto',
-    isAuto && count && jobs && `waiting on ${jobs} bg`,
-  ]
+// The state drawn dim at the end of the hint line under the prompt.
+const stateText = async ($: Engine) => {
+  const [list, isAuto] = await Promise.all([read($, items), read($, auto)])
+  const count = list.length
+  const jobs = isAuto && count ? (await read($, waiting)).length : 0
+  return [count && `${count} queued`, isAuto && 'auto', isAuto && count && jobs && `waiting on ${jobs} bg`]
     .filter(Boolean)
     .join(' · ')
-  $.ui.status(text || undefined)
 }
 
-const setItems = async ($: Engine, fn: (list: string[]) => string[]) => {
-  await update($, items, fn)
-  await showStatus($)
-}
+const move = ($: Engine, i: number, by: -1 | 1) =>
+  update($, items, list => {
+    const j = i + by
+    if (j < 0 || j >= list.length) return list
+    const copy = [...list]
+    ;[copy[i], copy[j]] = [list[j]!, list[i]!]
+    return copy
+  })
 
-const setWaiting = async ($: Engine, fn: (ids: string[]) => string[]) => {
-  await update($, waiting, fn)
-  await showStatus($)
-}
+const removeAt = ($: Engine, i: number) => update($, items, list => list.filter((_, j) => j !== i))
+
+// Empty text removes the prompt.
+const edit = ($: Engine, i: number, text: string) =>
+  text.trim() ? update($, items, list => list.map((t, j) => (j === i ? text.trim() : t))) : removeAt($, i)
 
 // A hook cannot submit while it holds the turn; send once it has ended.
 const send = async ($: Engine, text: string) => {
@@ -67,8 +71,18 @@ const sendIfIdle = async ($: Engine) => {
   if ((await read($, busy)) || !(await read($, auto)) || (await read($, waiting)).length) return
   const [first] = await read($, items)
   if (first === undefined) return
-  await setItems($, list => list.slice(1))
+  await update($, items, list => list.slice(1))
   await send($, first)
+}
+
+const enqueue = async ($: Engine, text: string) => {
+  await update($, items, list => [...list, text])
+  await sendIfIdle($)
+}
+
+const runAt = async ($: Engine, i: number, text: string) => {
+  await removeAt($, i)
+  await send($, text)
 }
 
 export const register: Register = on => {
@@ -83,7 +97,6 @@ export const register: Register = on => {
       description: 'Toggle running the queue after each task and its background jobs end',
       immediate: true,
     })
-    await showStatus($)
 
     return next(e)
   })
@@ -100,7 +113,7 @@ export const register: Register = on => {
     const pattern =
       e.tool === 'Bash' && e.run_in_background ? BASH_STARTED : e.tool === 'Agent' ? AGENT_STARTED : undefined
     const id = pattern && ran.text?.match(pattern)?.[1]
-    if (id) await setWaiting($, ids => [...ids.filter(one => one !== id), id])
+    if (id) await update($, waiting, ids => [...ids.filter(one => one !== id), id])
 
     return ran
   })
@@ -108,7 +121,7 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     if (NOTICE_ORIGINS.includes(e.origin.kind)) {
       const ended = [...e.text.matchAll(FINISHED), ...e.text.matchAll(HANDED_BACK)].map(match => match[1])
-      if (ended.length) await setWaiting($, ids => ids.filter(one => !ended.includes(one)))
+      if (ended.length) await update($, waiting, ids => ids.filter(one => !ended.includes(one)))
     }
 
     return next(e)
@@ -122,7 +135,6 @@ export const register: Register = on => {
     // Esc turns auto off instead of starting the next prompt.
     if (e.isAborted && (await read($, auto))) {
       await update($, auto, () => false)
-      await showStatus($)
       $.ui.toast('Queue auto is off. /queue-auto turns it back on.')
     } else {
       await sendIfIdle($)
@@ -134,7 +146,6 @@ export const register: Register = on => {
   on('command.run', { command: 'queue-auto' }, async $ => {
     const isOn = !(await read($, auto))
     await update($, auto, () => isOn)
-    await showStatus($)
     if (!isOn) return { text: 'Queue auto is off.' }
     await sendIfIdle($)
 
@@ -147,37 +158,88 @@ export const register: Register = on => {
     const found = args.match(/^(help|list|clear|unblock)$|^(run|drop)(?:\s+(\d+))?$/)
     const word = found?.[1] ?? found?.[2]
     const arg = found?.[3] ?? ''
+    if (word === 'help') return { text: HELP }
+
+    if (args === '') {
+      await $.ui.open({ id: PANE, title: 'Queue', focus: true, closeOnEscape: true })
+      return { text: 'Queue panel opened.' }
+    }
+
     const list = await read($, items)
     const n = Number(arg || '1')
     const i = Number.isInteger(n) && n >= 1 && n <= list.length ? n - 1 : -1
-
-    if (args === '' || word === 'help') return { text: HELP }
 
     if (word === 'list') {
       return { text: list.map((t, j) => `${j + 1}. ${t}`).join('\n') || 'Queue is empty.' }
     }
 
     if (word === 'clear') {
-      await setItems($, () => [])
+      await update($, items, () => [])
       return { text: `Cleared ${list.length} prompt(s).` }
     }
 
     if (word === 'unblock') {
-      await setWaiting($, () => [])
+      await update($, waiting, () => [])
       await sendIfIdle($)
       return { text: 'Stopped waiting on background jobs.' }
     }
 
     if (word === 'drop' || word === 'run') {
       if (i < 0) return { text: `No prompt ${arg || '1'}. Queue has ${list.length}.` }
-      await setItems($, l => l.filter((_, j) => j !== i))
-      if (word === 'run') await send($, list[i])
+      await (word === 'run' ? runAt($, i, list[i]) : removeAt($, i))
       return { text: `${word === 'run' ? 'Sending' : 'Dropped'}: ${list[i]}` }
     }
 
-    await setItems($, l => [...l, args])
-    await sendIfIdle($)
+    await enqueue($, args)
 
     return { text: `Queued #${list.length + 1}.` }
+  })
+
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    const text = await stateText($)
+    if (!text) return next(e)
+    return next({ ...e, props: { ...e.props, tail: [e.props.tail, text].filter(Boolean).join(' · ') } })
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const els = $.ui.resolve(e)
+    const { Box, Text, Button } = els
+    // Surfaces without a text field (vscode, mobile) add through the command.
+    const Input = 'Input' in els ? els.Input : undefined
+    const list = await read($, items)
+
+    return (
+      <Box flexDirection="column">
+        {Input ? (
+          <Input key="new" label="Add: " placeholder="Enter to queue at the end" value="" submitLabel="queue" autoFocus
+            onSubmit={(v: string) => { if (v.trim()) void enqueue($, v.trim()) }} />
+        ) : (
+          <Text dimColor>Add with /queue &lt;text&gt;</Text>
+        )}
+        <Box marginTop={1} flexDirection="column">
+          {list.length === 0 && <Text dimColor>Queue is empty.</Text>}
+          {list.map((t, i) => (
+            <Box key={`row-${i}`} flexDirection="row">
+              <Text>{i + 1}. </Text>
+              {Input ? (
+                <Input key={`edit-${i}`} value={t} submitLabel="save" onSubmit={(v: string) => void edit($, i, v)} />
+              ) : (
+                <Text>{t}</Text>
+              )}
+              <Text> </Text>
+              <Button key={`up-${i}`} label="↑" plain dimColor onPress={() => move($, i, -1)} />
+              <Text> </Text>
+              <Button key={`down-${i}`} label="↓" plain dimColor onPress={() => move($, i, 1)} />
+              <Text> </Text>
+              <Button key={`run-${i}`} label="▶" plain dimColor
+                onPress={() => void runAt($, i, t)} />
+              <Text> </Text>
+              <Button key={`rm-${i}`} label="✕" plain dimColor onPress={() => removeAt($, i)} />
+            </Box>
+          ))}
+        </Box>
+        <Text dimColor>Edit a prompt and press Enter to save; empty removes it. ▶ sends it now.</Text>
+      </Box>
+    )
   })
 }

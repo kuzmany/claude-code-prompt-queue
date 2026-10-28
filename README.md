@@ -26,6 +26,7 @@ In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add 
 
 | Command | What it does |
 | --- | --- |
+| `/queue` | Open the queue panel: edit, move up or down, run (▶) or remove (✕) each prompt, and add new ones. |
 | `/queue <text>` | Park a prompt. Works while Claude is busy. |
 | `/queue list` | Show parked prompts. |
 | `/queue run [n]` | Send prompt n now (default 1). |
@@ -36,7 +37,9 @@ In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add 
 
 **Auto mode** is off by default. When on, the next prompt starts only after the current task ends **and** every background job or agent it started has finished. Then the next, until the queue is empty. Auto stays on until you toggle it off. Pressing Esc turns it off.
 
-The status line shows the state, for example `3 queued · auto · waiting on 1 bg`.
+The hint line under the prompt shows the state in dim text, for example `3 queued · auto · waiting on 1 bg`. Other mods can add to the same line.
+
+`/queue help` lists the commands.
 
 The queue belongs to the current session.
 

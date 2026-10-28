@@ -3,7 +3,6 @@ import { test, expect, mock } from 'claude-code/testing'
 test('parks prompts and sends one on run', async ($, on) => {
   const sent: string[] = []
   const clock = mock.clock(on)
-  on('ui.status', () => ({ value: undefined }))
   on('prompt.submit', ($, e) => {
     sent.push(e.text)
     return { text: e.text }
@@ -32,7 +31,6 @@ test('parks prompts and sends one on run', async ($, on) => {
 test('auto sends all prompts one by one and stays on', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
-  on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('turn.complete', () => ({ text: '' }))
   on('prompt.submit', ($, e) => {
@@ -64,7 +62,6 @@ test('auto sends all prompts one by one and stays on', async ($, on) => {
 test('toggling auto on mid-task waits for the task to end', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
-  on('ui.status', () => ({ value: undefined }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('prompt.submit', ($, e) => {
@@ -89,7 +86,6 @@ test('toggling auto on mid-task waits for the task to end', async ($, on) => {
 test('auto waits for background jobs before the next prompt', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
-  on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('turn.complete', () => ({ text: '' }))
   on('tool.call', () => ({
@@ -125,7 +121,6 @@ test('auto waits for background jobs before the next prompt', async ($, on) => {
 test('tool output that only quotes job words is not a job', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
-  on('ui.status', () => ({ value: undefined }))
   on('turn.complete', () => ({ text: '' }))
   on('tool.call', () => ({
     result: { stdout: '' },
@@ -146,7 +141,6 @@ test('tool output that only quotes job words is not a job', async ($, on) => {
 test('a prompt queued mid-task waits for the task to end', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
-  on('ui.status', () => ({ value: undefined }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('prompt.submit', ($, e) => {
@@ -165,7 +159,6 @@ test('a failed send does not leave auto stuck', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
   let isFirst = true
-  on('ui.status', () => ({ value: undefined }))
   on('turn.complete', () => ({ text: '' }))
   on('prompt.submit', ($, e) => {
     if (isFirst) {
@@ -189,7 +182,6 @@ test('auto clears agents whose end arrives in another session message', async ($
   const clock = mock.clock(on)
   const sent: string[] = []
   let agent = 0
-  on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   on('turn.complete', () => ({ text: '' }))
   on('tool.call', () => ({ result: { stdout: '' }, text: `Async agent launched. agentId: a${++agent} (internal ID)` }))
@@ -220,4 +212,49 @@ test('auto clears agents whose end arrives in another session message', async ($
   await endTurn()
   await clock.advance(1)
   expect(sent.at(-1)).toBe('next')
+})
+
+test('panel edits, reorders, runs and removes; state shows in the hint line', async ($, on) => {
+  const clock = mock.clock(on)
+  const sent: string[] = []
+  let tail: string | undefined
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  on('ui.render', { component: 'PromptHint' }, ($: any, e: any) => {
+    tail = e.props.tail
+    const { Text } = $.ui.resolve(e)
+    return <Text>{e.props.hint}</Text>
+  })
+  const hint = async () => {
+    tail = undefined
+    const h = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '?' } } as any)
+    await h.unmount()
+    return tail
+  }
+  const list = async () => (await $.command.run({ command: 'queue', args: 'list' })).text
+
+  expect(await hint()).toBeUndefined()
+  for (const t of ['a', 'b', 'c']) await $.command.run({ command: 'queue', args: t })
+  expect((await $.command.run({ command: 'queue', args: '' })).text).toBe('Queue panel opened.')
+  expect(await hint()).toBe('3 queued')
+
+  const ui = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'Pane', requestId: 'queue',
+    props: { title: 'Queue', isFocused: true, bodyColumns: 100, placement: 'dock' } } as any)
+  await ui.press({ key: 'down-0' })
+  expect(await list()).toBe('1. b\n2. a\n3. c')
+  await ui.input({ key: 'edit-1', text: 'a2' })
+  await ui.input({ key: 'new', text: 'd' })
+  expect(await list()).toBe('1. b\n2. a2\n3. c\n4. d')
+  await ui.press({ key: 'rm-2' })
+  await ui.press({ key: 'run-0' })
+  await clock.advance(1)
+  expect(sent).toEqual(['b'])
+  expect(await list()).toBe('1. a2\n2. d')
+  await ui.input({ key: 'edit-0', text: '' })
+  expect(await list()).toBe('1. d')
+  expect(await hint()).toBe('1 queued')
+  await ui.unmount()
 })
