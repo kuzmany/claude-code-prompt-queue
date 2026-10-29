@@ -28,12 +28,18 @@ const HELP = `/queue            open the panel: edit, reorder, run, remove
 /queue unblock    stop waiting on background jobs
 /queue-auto       toggle: run the queue after each task and its background jobs end`
 
+// The first line of a prompt, cut to fit beside the other mods' counts.
+const peek = (text: string) => {
+  const line = text.split('\n')[0]!
+  return line.length > 30 ? `${line.slice(0, 29)}…` : line
+}
+
 // The state drawn dim in the band above the prompt.
 const stateText = async ($: Engine) => {
   const [list, isAuto] = await Promise.all([read($, items), read($, auto)])
   const count = list.length
   const jobs = isAuto && count ? (await read($, waiting)).length : 0
-  return [count && `${count} queued`, isAuto && 'auto', isAuto && count && jobs && `waiting on ${jobs} bg`]
+  return [count && `${count} queued: ${peek(list[0]!)}`, isAuto && 'auto', isAuto && count && jobs && `waiting on ${jobs} bg`]
     .filter(Boolean)
     .join(' · ')
 }
