@@ -28,7 +28,7 @@ const HELP = `/queue            open the panel: edit, reorder, run, remove
 /queue unblock    stop waiting on background jobs
 /queue-auto       toggle: run the queue after each task and its background jobs end`
 
-// The state drawn dim at the end of the hint line under the prompt.
+// The state drawn dim in the band above the prompt.
 const stateText = async ($: Engine) => {
   const [list, isAuto] = await Promise.all([read($, items), read($, auto)])
   const count = list.length
@@ -195,10 +195,17 @@ export const register: Register = on => {
     return { text: `Queued #${list.length + 1}.` }
   })
 
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const text = await stateText($)
+  // The state goes dim in the band above the prompt, in one row with what other mods draw there.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const text = e.props.hasSurvey ? '' : await stateText($)
     if (!text) return next(e)
-    return next({ ...e, props: { ...e.props, tail: [e.props.tail, text].filter(Boolean).join(' · ') } })
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="row">
+        <Text dimColor>{text}   </Text>
+        {await next(e)}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

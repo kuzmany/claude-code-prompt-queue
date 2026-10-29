@@ -37,7 +37,7 @@ In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add 
 
 **Auto mode** is off by default. When on, the next prompt starts only after the current task ends **and** every background job or agent it started has finished. Then the next, until the queue is empty. Auto stays on until you toggle it off. Pressing Esc turns it off.
 
-The hint line under the prompt shows the state in dim text, for example `3 queued · auto · waiting on 1 bg`. Other mods can add to the same line.
+A dim line above the prompt shows the state, for example `3 queued · auto · waiting on 1 bg`. Other mods can add to the same row.
 
 `/queue help` lists the commands.
 

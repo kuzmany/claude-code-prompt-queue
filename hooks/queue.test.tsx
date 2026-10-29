@@ -214,32 +214,30 @@ test('auto clears agents whose end arrives in another session message', async ($
   expect(sent.at(-1)).toBe('next')
 })
 
-test('panel edits, reorders, runs and removes; state shows in the hint line', async ($, on) => {
+test('panel edits, reorders, runs and removes; state shows above the prompt', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
-  let tail: string | undefined
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('prompt.submit', ($, e) => {
     sent.push(e.text)
     return { text: e.text }
   })
-  on('ui.render', { component: 'PromptHint' }, ($: any, e: any) => {
-    tail = e.props.tail
+  on('ui.render', { component: 'AbovePrompt' }, ($: any, e: any) => {
     const { Text } = $.ui.resolve(e)
-    return <Text>{e.props.hint}</Text>
+    return <Text>core</Text>
   })
-  const hint = async () => {
-    tail = undefined
-    const h = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '?' } } as any)
+  const band = async (text: RegExp) => {
+    const h = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as any)
+    const found = await h.find({ type: 'Text', text })
     await h.unmount()
-    return tail
+    return !!found
   }
   const list = async () => (await $.command.run({ command: 'queue', args: 'list' })).text
 
-  expect(await hint()).toBeUndefined()
+  expect(await band(/queued/)).toBe(false)
   for (const t of ['a', 'b', 'c']) await $.command.run({ command: 'queue', args: t })
   expect((await $.command.run({ command: 'queue', args: '' })).text).toBe('Queue panel opened.')
-  expect(await hint()).toBe('3 queued')
+  expect(await band(/^3 queued/)).toBe(true)
 
   const ui = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'Pane', requestId: 'queue',
     props: { title: 'Queue', isFocused: true, bodyColumns: 100, placement: 'dock' } } as any)
@@ -255,6 +253,6 @@ test('panel edits, reorders, runs and removes; state shows in the hint line', as
   expect(await list()).toBe('1. a2\n2. d')
   await ui.input({ key: 'edit-0', text: '' })
   expect(await list()).toBe('1. d')
-  expect(await hint()).toBe('1 queued')
+  expect(await band(/^1 queued/)).toBe(true)
   await ui.unmount()
 })
