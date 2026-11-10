@@ -16,6 +16,7 @@ test('parks prompts and sends one on run', async ($, on) => {
     return { text: e.text }
   })
 
+  await start($, on)
   await $.command.run({ command: 'queue', args: 'first task' })
   await $.command.run({ command: 'queue', args: 'second task' })
   expect(sent).toEqual([])
@@ -51,6 +52,7 @@ test('a leading slash parks a command and runs it as a command', async ($, on) =
     return { text: 'reviewed' }
   })
 
+  await start($, on)
   await $.command.run({ command: 'queue', args: '/review-pr 123' })
   await $.command.run({ command: 'queue-auto', args: '' })
   await clock.advance(1)
@@ -76,6 +78,7 @@ test('a command that starts no turn lets the queue move on', async ($, on) => {
     return { text: 'pong' }
   })
 
+  await start($, on)
   await $.command.run({ command: 'queue', args: '/ping' })
   await $.command.run({ command: 'queue', args: '/ping' })
   await $.command.run({ command: 'queue-auto', args: '' })
@@ -99,6 +102,7 @@ test('a command whose turn starts after it resolves keeps the next entry back', 
     return { text: e.text }
   })
 
+  await start($, on)
   await $.command.run({ command: 'queue', args: '/review-pr 123' })
   await $.command.run({ command: 'queue', args: 'fix tests' })
   await $.command.run({ command: 'queue-auto', args: '' })
@@ -128,6 +132,7 @@ test('auto sends all prompts one by one and stays on', async ($, on) => {
   const endTurn = () =>
     $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
 
+  await start($, on)
   for (const t of ['a', 'b', 'c']) await $.command.run({ command: 'queue', args: t })
   await $.command.run({ command: 'queue-auto', args: '' })
   await clock.advance(1)
@@ -157,6 +162,7 @@ test('toggling auto on mid-task waits for the task to end', async ($, on) => {
     return { text: e.text }
   })
 
+  await start($, on)
   await $.turn.start({ turnId: 't' } as never)
   await $.command.run({ command: 'queue', args: 'a' })
   await $.command.run({ command: 'queue-auto', args: '' })
@@ -285,6 +291,88 @@ test('a setting that cannot be saved leaves the toggle to the session', { option
   expect(sent).toEqual(['a'])
 })
 
+test('/queue-auto still toggles auto without an alias setting', async ($, on) => {
+  const clock = mock.clock(on)
+  const sent: string[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+
+  await start($, on)
+  await $.command.run({ command: 'queue', args: 'a' })
+  const toggled = await $.command.run({ command: 'queue-auto', args: '' })
+  expect(toggled.text).toBe('Queue auto is on (session).')
+  await clock.advance(1)
+  expect(sent).toEqual(['a'])
+})
+
+test('aliases move subcommands to /queue words or top-level commands', { options: { aliases: 'list=ls, status=/qs' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const sent: string[] = []
+  on('ui.toast', () => ({ value: undefined }))
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+
+  await start($, on)
+  await $.command.run({ command: 'queue', args: 'one' })
+  const listed = await $.command.run({ command: 'queue', args: 'ls' })
+  expect(listed.text).toBe('1. one')
+
+  const status = await $.command.run({ command: 'qs', args: '' })
+  expect(status.text).toBe('1 queued · auto off (session)\n1. one')
+
+  // The old top-level spelling toggles auto on, which sends what is parked.
+  const toggled = await $.command.run({ command: 'queue-auto', args: '' })
+  expect(toggled.text).toBe('Queue auto is on (session).')
+  await clock.advance(1)
+  expect(sent).toEqual(['one'])
+})
+
+test('a taken alias says so and leaves its name to its owner', { options: { aliases: 'status=/qs' } }, async ($, on) => {
+  const toasts: string[] = []
+  const answered: string[] = []
+  on('ui.toast', ($: any, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('command.register', (_: any, e: any) => {
+    if (e.name === 'qs') throw new Error('name taken')
+    return { value: e.name }
+  })
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  on('command.run', { command: 'qs' }, () => {
+    answered.push('owner')
+    return { text: 'owner answer' }
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(toasts).toEqual(['/qs is taken; that alias is off for this session.'])
+
+  const out = await $.command.run({ command: 'qs', args: '' })
+  expect(out.text).toBe('owner answer')
+  expect(answered).toEqual(['owner'])
+})
+
+test('an alias refuses arguments the subcommand does not take', { options: { aliases: 'run=/qr' } }, async ($, on) => {
+  await start($, on)
+  await $.command.run({ command: 'queue', args: 'a' })
+
+  const junk = await $.command.run({ command: 'qr', args: '1 junk' })
+  expect(junk.text).toBe('No prompt 1 junk. Queue has 1.')
+  const one = await $.command.run({ command: 'qr', args: '1' })
+  expect(one.text).toBe('Sending: a')
+})
+
+test('help lists the aliases', { options: { aliases: 'list=ls' } }, async ($, on) => {
+  await start($, on)
+  const help = (await $.command.run({ command: 'queue', args: 'help' })).text
+  expect(help).toContain('/queue ls')
+  expect(help).toContain('/queue-auto')
+})
+
 test('auto waits for background jobs before the next prompt', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
@@ -301,6 +389,7 @@ test('auto waits for background jobs before the next prompt', async ($, on) => {
   const endTurn = () =>
     $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
 
+  await start($, on)
   for (const t of ['a', 'b']) await $.command.run({ command: 'queue', args: t })
   await $.command.run({ command: 'queue-auto', args: '' })
   await clock.advance(1)
@@ -333,6 +422,7 @@ test('tool output that only quotes job words is not a job', async ($, on) => {
     return { text: e.text }
   })
 
+  await start($, on)
   await $.command.run({ command: 'queue-auto', args: '' })
   await $.tool.call({ tool: 'Bash', command: 'cat notes.txt' })
   await $.command.run({ command: 'queue', args: 'a' })
@@ -350,6 +440,7 @@ test('a prompt queued mid-task waits for the task to end', async ($, on) => {
     return { text: e.text }
   })
 
+  await start($, on)
   await $.turn.start({ turnId: 't' } as never)
   await $.command.run({ command: 'queue-auto', args: '' })
   await $.command.run({ command: 'queue', args: 'a' })
@@ -373,12 +464,13 @@ test('a failed send keeps the prompt and stops auto', async ($, on) => {
     return { text: e.text }
   })
 
+  await start($, on)
   await $.command.run({ command: 'queue', args: 'a' })
   await $.command.run({ command: 'queue-auto', args: '' })
   await clock.advance(1)
   const kept = await $.command.run({ command: 'queue', args: 'list' })
   expect(kept.text).toBe('1. a')
-  expect(toasts).toEqual(['Queue paused: could not send "a". /queue-auto resumes.'])
+  expect(toasts).toEqual(['Queue paused: could not send "a". /queue auto resumes.'])
 
   // Auto stopped on its own; turning it back on sends what was kept.
   refuse = false
@@ -402,11 +494,12 @@ test('a prompt a hook drops stays in the queue and stops auto', async ($, on) =>
     return { text: e.text }
   })
 
+  await start($, on)
   await $.command.run({ command: 'queue', args: 'a' })
   await $.command.run({ command: 'queue-auto', args: '' })
   await clock.advance(1)
   // A drop starts no turn, so the send has to clear its own flags.
-  expect(toasts).toEqual(['Queue paused: could not send "a": blocked by policy. /queue-auto resumes.'])
+  expect(toasts).toEqual(['Queue paused: could not send "a": blocked by policy. /queue auto resumes.'])
   expect((await $.command.run({ command: 'queue', args: 'list' })).text).toBe('1. a')
 
   dropped = false
@@ -432,6 +525,7 @@ test('a command that cannot run leaves the queue and the next prompt goes', asyn
     return { text: e.text }
   })
 
+  await start($, on)
   await $.command.run({ command: 'queue', args: '/bad-command' })
   await $.command.run({ command: 'queue-auto', args: '' })
   await clock.advance(1)
@@ -467,6 +561,7 @@ test('auto clears agents whose end arrives in another session message', async ($
   const endTurn = () =>
     $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
 
+  await start($, on)
   await $.command.run({ command: 'queue', args: 'next' })
   await $.tool.call({ tool: 'Agent', prompt: 'review', description: 'one' })
   await $.tool.call({ tool: 'Agent', prompt: 'review', description: 'two' })
@@ -532,7 +627,7 @@ test('panel edits, reorders, runs and removes; state shows above the prompt', as
   await ui.unmount()
 })
 
-test('commands carry the argument hint the typeahead shows', async ($, on) => {
+test('commands carry the argument hint the typeahead shows', { options: { aliases: 'run=/qr' } }, async ($, on) => {
   const hints: Record<string, string | undefined> = {}
   on('command.register', (_: any, e: any) => {
     hints[e.name] = e.argumentHint
@@ -542,6 +637,7 @@ test('commands carry the argument hint the typeahead shows', async ($, on) => {
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
   expect(hints.queue).toBe('[text | /command | help|list|status|run|drop|clear|unblock|auto]')
+  expect(hints.qr).toBe('[n]')
   expect(hints['queue-auto']).toBeUndefined()
 })
 
@@ -559,6 +655,7 @@ test('the panel refuses a leading slash that names no command', async ($, on) =>
     return { value: undefined }
   })
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  await start($, on)
   await $.command.run({ command: 'queue', args: 'keep' })
   await $.command.run({ command: 'queue', args: '' })
   const ui = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'Pane', requestId: 'queue',

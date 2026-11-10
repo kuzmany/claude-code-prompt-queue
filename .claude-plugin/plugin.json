@@ -16,6 +16,13 @@
       "required": false,
       "default": "session-false",
       "options": ["global-true", "global-false", "session-true", "session-false"]
+    },
+    "aliases": {
+      "type": "string",
+      "title": "Subcommand aliases",
+      "description": "Comma-separated subcommand=alias pairs, for example auto=/queue-auto, list=ls. A leading / registers a top-level command; a bare word adds another /queue subcommand.",
+      "required": false,
+      "default": ""
     }
   }
 }

@@ -52,7 +52,7 @@ A parked slash command runs through `$.command.run`, so it reaches the same comm
 
 Text that starts with `/` but names no command (`/Users/me/x.md look at this`) is refused when you queue it: a prompt cannot start with `/`, and no such command exists.
 
-If a prompt cannot be sent, it stays in the queue: auto entries return to the front and auto turns off with a toast; a manual run puts it back where it was. `/queue-auto` resumes. A slash command that cannot run (an unknown name, a command that fails) is removed with a toast instead, so it does not block the entries behind it.
+If a prompt cannot be sent, it stays in the queue: auto entries return to the front and auto turns off with a toast; a manual run puts it back where it was. `/queue auto` resumes. A slash command that cannot run (an unknown name, a command that fails) is removed with a toast instead, so it does not block the entries behind it.
 
 A dim line above the prompt shows the state, for example `3 queued: /review-pr 12 · auto · waiting on 1 bg`. Other mods can add to the same row.
 
@@ -64,7 +64,7 @@ If auto keeps waiting on a job that already ended (for example one a subagent st
 
 ## Settings
 
-The plugin's fields are rows in `/config`, under **Auto mode**.
+The plugin's fields are rows in `/config`, under **Auto mode** and **Subcommand aliases**.
 
 **Auto mode** sets auto's starting state and where `/queue auto` saves the toggle:
 
@@ -77,6 +77,18 @@ The plugin's fields are rows in `/config`, under **Auto mode**.
 
 The default keeps auto off and the toggle in this session, as before the setting existed. The setting is read once when a session starts; a reload keeps the value you toggled in that session, and a new session reads the setting again.
 
+**Subcommand aliases** adds other spellings for the subcommands, as comma-separated `sub=alias` pairs. A bare word adds another `/queue` subcommand; a leading `/` registers a top-level command:
+
+```
+list=ls, status=/qs, auto=/queue-auto
+```
+
+With that, `/queue ls`, `/qs` and `/queue-auto` all work. `/queue auto` is the default spelling; `/queue-auto` works without any alias setting, as it did before.
+
+An alias whose name is already taken (`/config`, another plugin's command) says so once and stays off for the session.
+
+Aliases show in `/queue help`.
+
 ## Example
 
 ```
@@ -84,7 +96,7 @@ The default keeps auto off and the toggle in this session, as before the setting
 /queue fix the failing tests
 /queue /review-pr 123
 /queue update the changelog
-/queue-auto
+/queue auto
 ```
 
 Claude finishes the test run, then fixes the tests, then reviews the PR, then updates the changelog.
