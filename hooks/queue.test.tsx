@@ -627,6 +627,29 @@ test('panel edits, reorders, runs and removes; state shows above the prompt', as
   await ui.unmount()
 })
 
+test('the band draws nothing with auto on and the queue empty', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($: any, e: any) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>core</Text>
+  })
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  const band = async (text: RegExp) => {
+    const h = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} } } as any)
+    const found = await h.find({ type: 'Text', text })
+    await h.unmount()
+    return !!found
+  }
+
+  await start($, on)
+  await $.command.run({ command: 'queue-auto', args: '' })
+  expect(await band(/auto/)).toBe(false)
+
+  await $.turn.start({ turnId: 't' } as never)
+  await $.command.run({ command: 'queue', args: 'a' })
+  expect(await band(/^1 queued: a · auto/)).toBe(true)
+})
+
 test('commands carry the argument hint the typeahead shows', { options: { aliases: 'run=/qr' } }, async ($, on) => {
   const hints: Record<string, string | undefined> = {}
   on('command.register', (_: any, e: any) => {
