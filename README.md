@@ -40,7 +40,7 @@ In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add 
 
 A parked slash command runs through `$.command.run`, so it reaches the same command, arguments and hooks as typing it. A command that starts no turn lets the next entry go by itself.
 
-If an entry cannot be sent, it stays in the queue: auto entries return to the front and auto turns off with a toast; a manual run puts it back where it was. `/queue-auto` resumes.
+If a prompt cannot be sent, it stays in the queue: auto entries return to the front and auto turns off with a toast; a manual run puts it back where it was. `/queue-auto` resumes. A slash command that cannot run (an unknown name, a command that fails) is removed with a toast instead, so it does not block the entries behind it.
 
 A dim line above the prompt shows the state, for example `3 queued: /review-pr 12 · auto · waiting on 1 bg`. Other mods can add to the same row.
 

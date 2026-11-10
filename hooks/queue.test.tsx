@@ -233,6 +233,34 @@ test('a failed send keeps the prompt and stops auto', async ($, on) => {
   expect(sent).toEqual(['a'])
 })
 
+test('a command that cannot run leaves the queue and the next prompt goes', async ($, on) => {
+  const clock = mock.clock(on)
+  const sent: string[] = []
+  const toasts: string[] = []
+  on('ui.toast', ($: any, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('command.run', { command: 'bad-command' }, () => {
+    throw new Error('unknown command')
+  })
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+
+  await $.command.run({ command: 'queue', args: '/bad-command' })
+  await $.command.run({ command: 'queue-auto', args: '' })
+  await clock.advance(1)
+  expect(toasts).toEqual(['Could not run "/bad-command". It was removed from the queue.'])
+  const empty = await $.command.run({ command: 'queue', args: 'list' })
+  expect(empty.text).toBe('Queue is empty.')
+
+  await $.command.run({ command: 'queue', args: '你好' })
+  await clock.advance(1)
+  expect(sent).toEqual(['你好'])
+})
+
 test('auto clears agents whose end arrives in another session message', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []

@@ -81,7 +81,9 @@ const edit = ($: Engine, i: number, text: string) =>
   text.trim() ? update($, items, list => list.map((item, j) => (j === i ? parseEntry(text) : item))) : removeAt($, i)
 
 // A hook cannot submit while it holds the turn; send once it has ended.
-const send = async ($: Engine, item: QueueItem, onFail: () => Promise<unknown>) => {
+// A prompt that could not be sent may go through next time; a command that
+// failed (an unknown name, a command that throws) will fail again.
+const send = async ($: Engine, item: QueueItem, onPromptFail: () => Promise<unknown>) => {
   await update($, busy, () => true)
   await update($, sending, () => true)
   $.clock.after(0, async () => {
@@ -100,7 +102,14 @@ const send = async ($: Engine, item: QueueItem, onFail: () => Promise<unknown>) 
       // A failed send started no turn, so nothing else would clear the flags.
       await update($, busy, () => false)
       await update($, sending, () => false)
-      await onFail()
+      // A command that cannot run would block every entry behind it, so it
+      // leaves the queue and the next entry goes.
+      if (item.kind === 'command') {
+        $.ui.toast(`Could not run "${textOf(item)}". It was removed from the queue.`)
+        await sendIfIdle($)
+        return
+      }
+      await onPromptFail()
     }
   })
 }
