@@ -265,6 +265,35 @@ test('a failed send keeps the prompt and stops auto', async ($, on) => {
   expect(sent).toEqual(['a'])
 })
 
+test('a prompt a hook drops stays in the queue and stops auto', async ($, on) => {
+  const clock = mock.clock(on)
+  const toasts: string[] = []
+  const sent: string[] = []
+  let dropped = true
+  on('ui.toast', ($: any, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('prompt.submit', ($, e) => {
+    if (dropped) return { drop: 'blocked by policy' }
+    sent.push(e.text)
+    return { text: e.text }
+  })
+
+  await $.command.run({ command: 'queue', args: 'a' })
+  await $.command.run({ command: 'queue-auto', args: '' })
+  await clock.advance(1)
+  // A drop starts no turn, so the send has to clear its own flags.
+  expect(toasts).toEqual(['Queue paused: could not send "a": blocked by policy. /queue-auto resumes.'])
+  expect((await $.command.run({ command: 'queue', args: 'list' })).text).toBe('1. a')
+
+  dropped = false
+  await $.command.run({ command: 'queue-auto', args: '' })
+  await clock.advance(1)
+  expect(sent).toEqual(['a'])
+  expect((await $.command.run({ command: 'queue', args: 'list' })).text).toBe('Queue is empty.')
+})
+
 test('a command that cannot run leaves the queue and the next prompt goes', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []

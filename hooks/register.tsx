@@ -10,8 +10,8 @@ const waiting = atom({ plugin: 'prompt-queue', key: 'waiting' } as const, [])
 // Whether a main-loop turn is running; kept in state so a reload mid-turn remembers it.
 const busy = atom({ plugin: 'prompt-queue', key: 'busy' } as const, false)
 // Whether a send is on its way and has not started a turn yet. Sends do not
-// overlap: one sets busy before its entry leaves the queue and clears it only
-// when the send failed or started no turn.
+// overlap: one sets busy before its entry leaves the queue (see send) and clears
+// it only when the send failed or started no turn.
 const sending = atom({ plugin: 'prompt-queue', key: 'sending' } as const, false)
 
 const BASH_STARTED = /running in background with ID: (\S+?)\.?\s/
@@ -113,12 +113,20 @@ const COMMAND_GRACE_MS = 250
 let sends = 0
 
 // A hook cannot submit while it holds the turn; send once it has ended.
+// `take` removes the entry from the queue, after busy is set: a reload's
+// session.start that starts sending finds the queue taken, not one entry short.
 // A prompt that could not be sent may go through next time; a command that
 // failed (an unknown name, a command that throws) will fail again.
-const send = async ($: Engine, item: QueueItem, onPromptFail: () => Promise<unknown>) => {
+const send = async (
+  $: Engine,
+  item: QueueItem,
+  take: () => Promise<unknown>,
+  onPromptFail: (reason?: string) => Promise<unknown>,
+) => {
   await update($, busy, () => true)
   await update($, sending, () => true)
   const gen = ++sends
+  await take()
   // A failed send started no turn, so nothing else would clear the flags.
   const stop = async () => {
     await update($, busy, () => false)
@@ -133,7 +141,13 @@ const send = async ($: Engine, item: QueueItem, onPromptFail: () => Promise<unkn
   $.clock.after(0, async () => {
     try {
       if (item.kind === 'prompt') {
-        await $.prompt.submit({ text: item.text, asUser: true })
+        const out = await $.prompt.submit({ text: item.text, asUser: true })
+        // A hook may refuse a prompt without throwing, answering { drop }: no
+        // turn starts then, so nothing else would clear the flags.
+        if ('drop' in out && gen === sends && (await read($, sending))) {
+          await stop()
+          await onPromptFail(out.drop)
+        }
         return
       }
       await $.command.run({ command: item.command, args: item.args })
@@ -159,12 +173,12 @@ const sendIfIdle = async ($: Engine) => {
   if ((await read($, busy)) || !(await read($, auto)) || (await read($, waiting)).length) return
   const [first] = await read($, items)
   if (first === undefined) return
-  await update($, items, list => list.slice(1))
-  await send($, first, async () => {
+  await send($, first, () => update($, items, list => list.slice(1)), async reason => {
     // Keep what could not be sent, at the front, and stop trying on its own.
     await update($, items, list => [first, ...list])
     await update($, auto, () => false)
-    $.ui.toast(`Queue paused: could not send "${peek(textOf(first))}". /queue-auto resumes.`)
+    const why = reason ? `: ${reason}` : ''
+    $.ui.toast(`Queue paused: could not send "${peek(textOf(first))}"${why}. /queue-auto resumes.`)
   })
 }
 
@@ -174,13 +188,13 @@ const enqueue = async ($: Engine, text: string) => {
 }
 
 const runAt = async ($: Engine, i: number, item: QueueItem) => {
-  await removeAt($, i)
-  await send($, item, async () => {
+  await send($, item, () => removeAt($, i), async reason => {
     await update($, items, list => {
       const at = Math.min(i, list.length)
       return [...list.slice(0, at), item, ...list.slice(at)]
     })
-    $.ui.toast(`Could not send "${peek(textOf(item))}". It stays in the queue.`)
+    const why = reason ? `: ${reason}` : ''
+    $.ui.toast(`Could not send "${peek(textOf(item))}"${why}. It stays in the queue.`)
   })
 }
 
