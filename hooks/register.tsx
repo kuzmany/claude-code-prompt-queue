@@ -28,13 +28,14 @@ const NOTICE_ORIGINS = ['task-notification', 'peer']
 const PANE = 'queue'
 
 // The hint the typeahead and the input box draw dim after the command name.
-const ARGUMENTS = '[text | /command | help|list|run|drop|clear|unblock]'
+const ARGUMENTS = '[text | /command | help|list|status|run|drop|clear|unblock|auto]'
 
 const HELP = `/queue            open the panel: edit, reorder, run, remove
 /queue <text>     park a prompt
 /queue /cmd ...   park a slash command to run as if typed
 /queue help       list these commands
 /queue list       show parked entries
+/queue status     print the queue without the panel
 /queue run [n]    send entry n now (default 1)
 /queue drop <n>   remove entry n
 /queue clear      remove all entries
@@ -105,6 +106,14 @@ const stateText = async ($: Engine) => {
   return [count && `${count} queued: ${peek(textOf(list[0]!))}`, isAuto && 'auto', isAuto && count && jobs && `waiting on ${jobs} bg`]
     .filter(Boolean)
     .join(' · ')
+}
+
+// The panel's content as text, with no editing or buttons.
+const statusText = async ($: Engine) => {
+  const [list, isAuto, jobs] = await Promise.all([read($, items), read($, auto), read($, waiting)])
+  const head = `${list.length ? `${list.length} queued` : 'Queue is empty'} · auto ${isAuto ? 'on' : 'off'} (${autoMode.scope})`
+  const waitingOn = jobs.length ? `waiting on ${jobs.length} background job(s): ${jobs.join(', ')}` : ''
+  return [head, waitingOn, ...list.map((item, i) => `${i + 1}. ${textOf(item)}`)].filter(Boolean).join('\n')
 }
 
 const move = ($: Engine, i: number, by: -1 | 1) =>
@@ -260,7 +269,7 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: 'queue',
-      description: 'Park a prompt or command to run later (help, list, run, drop, clear, unblock, auto)',
+      description: 'Park a prompt or command to run later (help, list, status, run, drop, clear, unblock, auto)',
       argumentHint: ARGUMENTS,
       immediate: true,
     })
@@ -326,10 +335,11 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'queue' }, async ($, e) => {
     const args = e.args.trim()
     // A subcommand is matched only in its exact form, so "/queue list the files" is queued.
-    const found = args.match(/^(help|list|clear|unblock|auto)$|^(run|drop)(?:\s+(\d+))?$/)
+    const found = args.match(/^(help|list|clear|unblock|status|auto)$|^(run|drop)(?:\s+(\d+))?$/)
     const word = found?.[1] ?? found?.[2]
     const arg = found?.[3] ?? ''
     if (word === 'help') return { text: HELP }
+    if (word === 'status') return { text: await statusText($) }
     if (word === 'auto') return toggleAuto($)
 
     if (args === '') {

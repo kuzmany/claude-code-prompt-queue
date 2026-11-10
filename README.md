@@ -30,6 +30,7 @@ In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add 
 | `/queue <text>` | Park a prompt. Works while Claude is busy. |
 | `/queue /name [args]` | Park a slash command to run as if you typed it. |
 | `/queue list` | Show parked entries. |
+| `/queue status` | Print the queue state without opening the panel. |
 | `/queue run [n]` | Send entry n now (default 1). |
 | `/queue drop <n>` | Remove entry n. |
 | `/queue clear` | Remove all entries. |
@@ -38,6 +39,14 @@ In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add 
 | `/queue unblock` | Stop waiting on background jobs. |
 
 **Auto mode** is off by default. When on, the next entry starts only after the current task ends **and** every background job or agent it started has finished. Then the next, until the queue is empty. Auto stays on until you toggle it off. Pressing Esc turns it off too. Whether `/queue auto`'s choice lasts past the session is up to the **Auto mode** setting.
+
+`/queue status` prints the same state the panel shows, in one line plus the entries, and exits — no panel, no buttons:
+
+```
+2 queued · auto off (session)
+1. fix the failing tests
+2. /review-pr 123
+```
 
 A parked slash command runs through `$.command.run`, so it reaches the same command, arguments and hooks as typing it. The next entry waits until that command's turn has started, or a short while if it starts none.
 

@@ -541,8 +541,15 @@ test('commands carry the argument hint the typeahead shows', async ($, on) => {
   on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
-  expect(hints.queue).toBe('[text | /command | help|list|run|drop|clear|unblock]')
+  expect(hints.queue).toBe('[text | /command | help|list|status|run|drop|clear|unblock|auto]')
   expect(hints['queue-auto']).toBeUndefined()
+})
+
+test('status prints the queue without the panel', async ($, on) => {
+  await start($, on)
+  for (const t of ['a', '/review-pr 2']) await $.command.run({ command: 'queue', args: t })
+  const status = await $.command.run({ command: 'queue', args: 'status' })
+  expect(status.text).toBe('2 queued · auto off (session)\n1. a\n2. /review-pr 2')
 })
 
 test('the panel refuses a leading slash that names no command', async ($, on) => {
