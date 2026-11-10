@@ -10,6 +10,7 @@ declare module 'claude-code' {
     'prompt-queue': {
       items: Shaped<QueueItems>
       auto: boolean
+      initialized: boolean
       waiting: string[]
       busy: boolean
       sending: boolean

@@ -1,5 +1,13 @@
 import { test, expect, mock } from 'claude-code/testing'
 
+// A test registers its hooks before its first call on $, which loads the plugin:
+// these two stand for the engine beneath it, and raise the session's start.
+const start = async ($: any, on: any) => {
+  on('command.register', (_: any, e: any) => ({ value: e.name }))
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+}
+
 test('parks prompts and sends one on run', async ($, on) => {
   const sent: string[] = []
   const clock = mock.clock(on)
@@ -160,7 +168,121 @@ test('toggling auto on mid-task waits for the task to end', async ($, on) => {
   expect(sent).toEqual(['a'])
 
   const off = await $.command.run({ command: 'queue-auto', args: '' })
-  expect(off.text).toBe('Queue auto is off.')
+  expect(off.text).toBe('Queue auto is off (session).')
+})
+
+test('the auto setting starts the session', { options: { autoMode: 'session-true' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const sent: string[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+
+  await start($, on)
+  await $.command.run({ command: 'queue', args: 'go' })
+  await clock.advance(1)
+  expect(sent).toEqual(['go'])
+})
+
+test('session auto keeps the toggle in the session', { options: { autoMode: 'session-true' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const saved: string[] = []
+  const sent: string[] = []
+  on('config.set', ($, e) => {
+    saved.push(`${e.key}=${e.value}`)
+    return { value: e.value }
+  })
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+
+  await start($, on)
+  const off = await $.command.run({ command: 'queue', args: 'auto' })
+  expect(off.text).toBe('Queue auto is off (session).')
+  expect(saved).toEqual([])
+
+  await $.command.run({ command: 'queue', args: 'a' })
+  const turnedOn = await $.command.run({ command: 'queue', args: 'auto' })
+  expect(turnedOn.text).toBe('Queue auto is on (session).')
+  await clock.advance(1)
+  expect(sent).toEqual(['a'])
+  expect(saved).toEqual([])
+})
+
+test('global auto writes the choice back to settings', { options: { autoMode: 'global-false' } }, async ($, on) => {
+  const saved: string[] = []
+  on('config.set', ($, e) => {
+    saved.push(`${e.key}=${e.value}`)
+    return { value: e.value }
+  })
+
+  await start($, on)
+  const turnedOn = await $.command.run({ command: 'queue', args: 'auto' })
+  expect(turnedOn.text).toBe('Queue auto is on (global).')
+  expect(saved).toEqual(['prompt-queue.autoMode=global-true'])
+
+  const turnedOff = await $.command.run({ command: 'queue-auto', args: '' })
+  expect(turnedOff.text).toBe('Queue auto is off (global).')
+  expect(saved).toEqual(['prompt-queue.autoMode=global-true', 'prompt-queue.autoMode=global-false'])
+})
+
+test('a global toggle sends what is parked once the choice is saved', { options: { autoMode: 'global-false' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const order: string[] = []
+  const sent: string[] = []
+  on('config.set', ($, e) => {
+    order.push('save')
+    return { value: e.value }
+  })
+  on('prompt.submit', ($, e) => {
+    order.push('send')
+    sent.push(e.text)
+    return { text: e.text }
+  })
+
+  await start($, on)
+  await $.command.run({ command: 'queue', args: 'a' })
+  await $.command.run({ command: 'queue', args: 'auto' })
+  await clock.advance(1)
+  expect(order).toEqual(['save', 'send'])
+  expect(sent).toEqual(['a'])
+})
+
+test('a setting that cannot be saved leaves the toggle to the session', { options: { autoMode: 'global-true' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const toasts: string[] = []
+  const sent: string[] = []
+  let how: 'throw' | 'deny' = 'throw'
+  on('ui.toast', ($: any, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('config.set', () => {
+    if (how === 'throw') throw new Error('not saved')
+    return { deny: 'locked' }
+  })
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+
+  await start($, on)
+  const off = await $.command.run({ command: 'queue', args: 'auto' })
+  expect(off.text).toBe('Queue auto is off (global).')
+
+  await $.command.run({ command: 'queue', args: 'a' })
+  how = 'deny'
+  const back = await $.command.run({ command: 'queue', args: 'auto' })
+  expect(back.text).toBe('Queue auto is on (global).')
+  expect(toasts).toEqual([
+    'Auto changed for this session only: the setting could not be saved.',
+    'Auto changed for this session only: the setting could not be saved.',
+  ])
+  // A denied write saved nothing, so this send is the only one on its way.
+  await clock.advance(1)
+  expect(sent).toEqual(['a'])
 })
 
 test('auto waits for background jobs before the next prompt', async ($, on) => {

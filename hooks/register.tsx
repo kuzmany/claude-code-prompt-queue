@@ -5,6 +5,8 @@ import type { QueueItem } from '../types'
 
 const items = atom({ plugin: 'prompt-queue', key: 'items' } as const, [], { shape: 'items-2' })
 const auto = atom({ plugin: 'prompt-queue', key: 'auto' } as const, false)
+// Whether this session read the auto setting in; a reload keeps the toggle's choice.
+const initialized = atom({ plugin: 'prompt-queue', key: 'initialized' } as const, false)
 // Ids of background tasks and agents the main session started and still waits on.
 const waiting = atom({ plugin: 'prompt-queue', key: 'waiting' } as const, [])
 // Whether a main-loop turn is running; kept in state so a reload mid-turn remembers it.
@@ -37,7 +39,20 @@ const HELP = `/queue            open the panel: edit, reorder, run, remove
 /queue drop <n>   remove entry n
 /queue clear      remove all entries
 /queue unblock    stop waiting on background jobs
-/queue-auto       toggle: run the queue after each task and its background jobs end`
+/queue auto       toggle: run the queue after each task and its background jobs end
+/queue-auto       the same toggle`
+
+type Scope = 'global' | 'session'
+type AutoMode = { scope: Scope; value: boolean }
+
+// The settings value names both the initial state and who keeps the toggle's choice.
+// Off and session-only is what the plugin did before the setting existed.
+const readAutoMode = (raw: unknown): AutoMode => {
+  const text = String(raw ?? 'session-false')
+  return { scope: text.startsWith('session-') ? 'session' : 'global', value: !text.endsWith('false') }
+}
+
+let autoMode: AutoMode = readAutoMode(undefined)
 
 // A leading slash parks a slash command rather than text for the model.
 const COMMAND = /^\/(\S+)(?:\s+([\s\S]*))?$/
@@ -201,11 +216,51 @@ const runAt = async ($: Engine, i: number, item: QueueItem) => {
   })
 }
 
-export const register: Register = on => {
+// `global-*` keeps the toggle in settings; `session-*` leaves settings alone.
+const toggleAuto = async ($: Engine) => {
+  const isOn = !(await read($, auto))
+  await update($, auto, () => isOn)
+  const text = `Queue auto is ${isOn ? 'on' : 'off'} (${autoMode.scope}).`
+
+  if (autoMode.scope === 'session') {
+    if (isOn) await sendIfIdle($)
+    return { text }
+  }
+
+  try {
+    const saved = await $.config.set({
+      key: 'prompt-queue.autoMode',
+      value: isOn ? 'global-true' : 'global-false',
+    })
+    // The write usually reloads the module and the reload's session.start
+    // sends; where it does not reload, this one does. The busy flag keeps the
+    // two from both sending.
+    if (!saved.deny) {
+      if (isOn) await sendIfIdle($)
+      return { text }
+    }
+  } catch {
+    // The write failed; the toggle still stands for this session.
+  }
+
+  $.ui.toast('Auto changed for this session only: the setting could not be saved.')
+  if (isOn) await sendIfIdle($)
+  return { text }
+}
+
+export const register: Register = (on, options) => {
+  autoMode = readAutoMode(options.autoMode)
+
   on('session.start', async ($, e, next) => {
+    // Read the setting once per session; a reload keeps what a toggle stored.
+    if (!(await read($, initialized))) {
+      await update($, auto, () => autoMode.value)
+      await update($, initialized, () => true)
+    }
+
     await $.command.register({
       name: 'queue',
-      description: 'Park a prompt or command to run later (list, run, drop, clear)',
+      description: 'Park a prompt or command to run later (help, list, run, drop, clear, unblock, auto)',
       argumentHint: ARGUMENTS,
       immediate: true,
     })
@@ -214,6 +269,9 @@ export const register: Register = on => {
       description: 'Toggle running the queue after each task and its background jobs end',
       immediate: true,
     })
+
+    // A reload after saving a global choice re-runs this; the send it dropped goes here.
+    await sendIfIdle($)
 
     return next(e)
   })
@@ -263,22 +321,16 @@ export const register: Register = on => {
     return ended
   })
 
-  on('command.run', { command: 'queue-auto' }, async $ => {
-    const isOn = !(await read($, auto))
-    await update($, auto, () => isOn)
-    if (!isOn) return { text: 'Queue auto is off.' }
-    await sendIfIdle($)
-
-    return { text: 'Queue auto is on: entries run after each task and its background jobs end.' }
-  })
+  on('command.run', { command: 'queue-auto' }, async $ => toggleAuto($))
 
   on('command.run', { command: 'queue' }, async ($, e) => {
     const args = e.args.trim()
     // A subcommand is matched only in its exact form, so "/queue list the files" is queued.
-    const found = args.match(/^(help|list|clear|unblock)$|^(run|drop)(?:\s+(\d+))?$/)
+    const found = args.match(/^(help|list|clear|unblock|auto)$|^(run|drop)(?:\s+(\d+))?$/)
     const word = found?.[1] ?? found?.[2]
     const arg = found?.[3] ?? ''
     if (word === 'help') return { text: HELP }
+    if (word === 'auto') return toggleAuto($)
 
     if (args === '') {
       await $.ui.open({ id: PANE, title: 'Queue', focus: true, closeOnEscape: true })
