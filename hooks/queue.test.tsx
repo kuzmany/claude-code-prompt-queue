@@ -410,6 +410,19 @@ test('panel edits, reorders, runs and removes; state shows above the prompt', as
   await ui.unmount()
 })
 
+test('commands carry the argument hint the typeahead shows', async ($, on) => {
+  const hints: Record<string, string | undefined> = {}
+  on('command.register', (_: any, e: any) => {
+    hints[e.name] = e.argumentHint
+    return { value: e.name }
+  })
+  on('session.start', (_: any, e: any) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  expect(hints.queue).toBe('[text | /command | help|list|run|drop|clear|unblock]')
+  expect(hints['queue-auto']).toBeUndefined()
+})
+
 test('the panel refuses a leading slash that names no command', async ($, on) => {
   const toasts: string[] = []
   on('ui.toast', ($: any, e: any) => {

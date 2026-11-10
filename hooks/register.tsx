@@ -25,6 +25,9 @@ const NOTICE_ORIGINS = ['task-notification', 'peer']
 
 const PANE = 'queue'
 
+// The hint the typeahead and the input box draw dim after the command name.
+const ARGUMENTS = '[text | /command | help|list|run|drop|clear|unblock]'
+
 const HELP = `/queue            open the panel: edit, reorder, run, remove
 /queue <text>     park a prompt
 /queue /cmd ...   park a slash command to run as if typed
@@ -203,6 +206,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'queue',
       description: 'Park a prompt or command to run later (list, run, drop, clear)',
+      argumentHint: ARGUMENTS,
       immediate: true,
     })
     await $.command.register({
