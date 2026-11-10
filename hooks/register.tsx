@@ -9,7 +9,9 @@ const auto = atom({ plugin: 'prompt-queue', key: 'auto' } as const, false)
 const waiting = atom({ plugin: 'prompt-queue', key: 'waiting' } as const, [])
 // Whether a main-loop turn is running; kept in state so a reload mid-turn remembers it.
 const busy = atom({ plugin: 'prompt-queue', key: 'busy' } as const, false)
-// Whether a send is on its way and has not started a turn yet.
+// Whether a send is on its way and has not started a turn yet. Sends do not
+// overlap: one sets busy before its entry leaves the queue and clears it only
+// when the send failed or started no turn.
 const sending = atom({ plugin: 'prompt-queue', key: 'sending' } as const, false)
 
 const BASH_STARTED = /running in background with ID: (\S+?)\.?\s/
@@ -36,6 +38,10 @@ const HELP = `/queue            open the panel: edit, reorder, run, remove
 
 // A leading slash parks a slash command rather than text for the model.
 const COMMAND = /^\/(\S+)(?:\s+([\s\S]*))?$/
+// What the engine reads as a command name, as its own dispatch tests it. Text
+// with a leading slash that names no such command can be neither run nor sent
+// as a prompt ($.prompt.submit refuses a prompt that starts with "/").
+const COMMAND_NAME = /^[A-Za-z0-9_][A-Za-z0-9:_-]*$/
 
 const parseEntry = (text: string): QueueItem => {
   const trimmed = text.trim()
@@ -43,6 +49,24 @@ const parseEntry = (text: string): QueueItem => {
   return found
     ? { kind: 'command', command: found[1]!, args: (found[2] ?? '').trim() }
     : { kind: 'prompt', text: trimmed }
+}
+
+// The token after the slash when the text starts with one that names no command.
+const badCommand = (text: string) => {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('/')) return undefined
+  const name = trimmed.match(COMMAND)?.[1]
+  if (name !== undefined && COMMAND_NAME.test(name)) return undefined
+  return name === undefined ? trimmed.split(/\s+/)[0]! : `/${name}`
+}
+
+const REFUSED = (token: string) => `${token} is not a command name, and a prompt cannot start with "/".`
+
+// Refuses text that can never be queued, saying why in a toast.
+const refuse = ($: Engine, text: string) => {
+  const bad = badCommand(text)
+  if (bad !== undefined) $.ui.toast(REFUSED(bad))
+  return bad !== undefined
 }
 
 // The line a parked entry shows as: its command as typed, or its prompt.
@@ -80,35 +104,51 @@ const removeAt = ($: Engine, i: number) => update($, items, list => list.filter(
 const edit = ($: Engine, i: number, text: string) =>
   text.trim() ? update($, items, list => list.map((item, j) => (j === i ? parseEntry(text) : item))) : removeAt($, i)
 
+// How long a command that starts no turn holds the queue. The engine raises a
+// command's turn after $.command.run resolves, so sending never means "no turn"
+// at that point; turn.start clears the flag instead, and only silence moves on.
+const COMMAND_GRACE_MS = 250
+
+// Counts sends, so a late check of one does not act on a later send's flags.
+let sends = 0
+
 // A hook cannot submit while it holds the turn; send once it has ended.
 // A prompt that could not be sent may go through next time; a command that
 // failed (an unknown name, a command that throws) will fail again.
 const send = async ($: Engine, item: QueueItem, onPromptFail: () => Promise<unknown>) => {
   await update($, busy, () => true)
   await update($, sending, () => true)
+  const gen = ++sends
+  // A failed send started no turn, so nothing else would clear the flags.
+  const stop = async () => {
+    await update($, busy, () => false)
+    await update($, sending, () => false)
+  }
+  // Whatever was expected never came: the queue has nothing more to wait for.
+  const moveOn = async () => {
+    await stop()
+    await sendIfIdle($)
+  }
+
   $.clock.after(0, async () => {
     try {
-      if (item.kind === 'command') await $.command.run({ command: item.command, args: item.args })
-      else await $.prompt.submit({ text: item.text, asUser: true })
-
-      // A prompt starts a turn, which clears sending at turn.start; a command
-      // may start none, so the queue moves on by itself after one.
-      if (item.kind === 'command' && (await read($, sending))) {
-        await update($, busy, () => false)
-        await update($, sending, () => false)
-        await sendIfIdle($)
+      if (item.kind === 'prompt') {
+        await $.prompt.submit({ text: item.text, asUser: true })
+        return
       }
+      await $.command.run({ command: item.command, args: item.args })
+      $.clock.after(COMMAND_GRACE_MS, async () => {
+        if (gen === sends && (await read($, sending))) await moveOn()
+      })
     } catch {
-      // A failed send started no turn, so nothing else would clear the flags.
-      await update($, busy, () => false)
-      await update($, sending, () => false)
       // A command that cannot run would block every entry behind it, so it
       // leaves the queue and the next entry goes.
       if (item.kind === 'command') {
         $.ui.toast(`Could not run "${textOf(item)}". It was removed from the queue.`)
-        await sendIfIdle($)
+        await moveOn()
         return
       }
+      await stop()
       await onPromptFail()
     }
   })
@@ -252,6 +292,11 @@ export const register: Register = on => {
       return { text: `${word === 'run' ? 'Sending' : 'Dropped'}: ${textOf(list[i]!)}` }
     }
 
+    // A leading slash that names no command cannot be run or sent, so it is
+    // refused now rather than dropped by a send that cannot work.
+    const bad = badCommand(args)
+    if (bad) return { text: REFUSED(bad) }
+
     await enqueue($, args)
 
     return { text: `Queued #${list.length + 1}.` }
@@ -281,7 +326,7 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {Input ? (
           <Input key="new" label="Add: " placeholder="Enter to queue at the end" value="" submitLabel="queue" autoFocus
-            onSubmit={(v: string) => { if (v.trim()) void enqueue($, v.trim()) }} />
+            onSubmit={(v: string) => { if (v.trim() && !refuse($, v)) void enqueue($, v.trim()) }} />
         ) : (
           <Text dimColor>Add with /queue &lt;text&gt;</Text>
         )}
@@ -291,7 +336,8 @@ export const register: Register = on => {
             <Box key={`row-${i}`} flexDirection="row">
               <Text>{i + 1}. </Text>
               {Input ? (
-                <Input key={`edit-${i}`} value={textOf(item)} submitLabel="save" onSubmit={(v: string) => void edit($, i, v)} />
+                <Input key={`edit-${i}`} value={textOf(item)} submitLabel="save"
+                  onSubmit={(v: string) => { if (!refuse($, v)) void edit($, i, v) }} />
               ) : (
                 <Text>{textOf(item)}</Text>
               )}

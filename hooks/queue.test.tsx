@@ -76,6 +76,38 @@ test('a command that starts no turn lets the queue move on', async ($, on) => {
   expect(ran).toEqual(['ping', 'ping'])
 })
 
+test('a command whose turn starts after it resolves keeps the next entry back', async ($, on) => {
+  const clock = mock.clock(on)
+  const sent: string[] = []
+  const ran: string[] = []
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('command.run', { command: 'review-pr' }, ($, e) => {
+    ran.push(e.args)
+    return { text: 'reviewed' }
+  })
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+
+  await $.command.run({ command: 'queue', args: '/review-pr 123' })
+  await $.command.run({ command: 'queue', args: 'fix tests' })
+  await $.command.run({ command: 'queue-auto', args: '' })
+  await clock.advance(1)
+  expect(ran).toEqual(['123'])
+  expect(sent).toEqual([])
+
+  // The engine raises the command's turn only after command.run resolved.
+  await $.turn.start({ turnId: 't' } as never)
+  await clock.advance(1000)
+  expect(sent).toEqual([])
+
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
+  await clock.advance(1)
+  expect(sent).toEqual(['fix tests'])
+})
+
 test('auto sends all prompts one by one and stays on', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
@@ -261,6 +293,15 @@ test('a command that cannot run leaves the queue and the next prompt goes', asyn
   expect(sent).toEqual(['你好'])
 })
 
+test('a leading slash that names no command is refused when queued', async ($, on) => {
+  const out = await $.command.run({ command: 'queue', args: '/Users/me/x.md 看一下这个文件' })
+  expect(out.text).toBe('/Users/me/x.md is not a command name, and a prompt cannot start with "/".')
+  const bare = await $.command.run({ command: 'queue', args: '/' })
+  expect(bare.text).toBe('/ is not a command name, and a prompt cannot start with "/".')
+  const list = await $.command.run({ command: 'queue', args: 'list' })
+  expect(list.text).toBe('Queue is empty.')
+})
+
 test('auto clears agents whose end arrives in another session message', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
@@ -337,5 +378,29 @@ test('panel edits, reorders, runs and removes; state shows above the prompt', as
   await ui.input({ key: 'edit-0', text: '' })
   expect(await list()).toBe('1. d')
   expect(await band(/^1 queued: d/)).toBe(true)
+  await ui.unmount()
+})
+
+test('the panel refuses a leading slash that names no command', async ($, on) => {
+  const toasts: string[] = []
+  on('ui.toast', ($: any, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.command.run({ command: 'queue', args: 'keep' })
+  await $.command.run({ command: 'queue', args: '' })
+  const ui = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'Pane', requestId: 'queue',
+    props: { title: 'Queue', isFocused: true, bodyColumns: 100, placement: 'dock' } } as any)
+  const list = async () => (await $.command.run({ command: 'queue', args: 'list' })).text
+  const refused = '/Users/me/x.md is not a command name, and a prompt cannot start with "/".'
+
+  await ui.input({ key: 'new', text: '/Users/me/x.md look at this' })
+  expect(toasts).toEqual([refused])
+  expect(await list()).toBe('1. keep')
+
+  await ui.input({ key: 'edit-0', text: '/Users/me/x.md' })
+  expect(toasts).toEqual([refused, refused])
+  expect(await list()).toBe('1. keep')
   await ui.unmount()
 })
