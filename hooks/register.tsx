@@ -1,12 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { Engine, Register } from 'claude-code'
 
-const items = atom({ plugin: 'prompt-queue', key: 'items' } as const, [])
+import type { QueueItem } from '../types'
+
+const items = atom({ plugin: 'prompt-queue', key: 'items' } as const, [], { shape: 'items-2' })
 const auto = atom({ plugin: 'prompt-queue', key: 'auto' } as const, false)
 // Ids of background tasks and agents the main session started and still waits on.
 const waiting = atom({ plugin: 'prompt-queue', key: 'waiting' } as const, [])
 // Whether a main-loop turn is running; kept in state so a reload mid-turn remembers it.
 const busy = atom({ plugin: 'prompt-queue', key: 'busy' } as const, false)
+// Whether a send is on its way and has not started a turn yet.
+const sending = atom({ plugin: 'prompt-queue', key: 'sending' } as const, false)
 
 const BASH_STARTED = /running in background with ID: (\S+?)\.?\s/
 const AGENT_STARTED = /agentId: ([\w-]+)/
@@ -21,12 +25,29 @@ const PANE = 'queue'
 
 const HELP = `/queue            open the panel: edit, reorder, run, remove
 /queue <text>     park a prompt
-/queue list       show parked prompts
-/queue run [n]    send prompt n now (default 1)
-/queue drop <n>   remove prompt n
-/queue clear      remove all
+/queue /cmd ...   park a slash command to run as if typed
+/queue help       list these commands
+/queue list       show parked entries
+/queue run [n]    send entry n now (default 1)
+/queue drop <n>   remove entry n
+/queue clear      remove all entries
 /queue unblock    stop waiting on background jobs
 /queue-auto       toggle: run the queue after each task and its background jobs end`
+
+// A leading slash parks a slash command rather than text for the model.
+const COMMAND = /^\/(\S+)(?:\s+([\s\S]*))?$/
+
+const parseEntry = (text: string): QueueItem => {
+  const trimmed = text.trim()
+  const found = trimmed.match(COMMAND)
+  return found
+    ? { kind: 'command', command: found[1]!, args: (found[2] ?? '').trim() }
+    : { kind: 'prompt', text: trimmed }
+}
+
+// The line a parked entry shows as: its command as typed, or its prompt.
+const textOf = (item: QueueItem) =>
+  item.kind === 'prompt' ? item.text : `/${item.command}${item.args ? ` ${item.args}` : ''}`
 
 // The first line of a prompt, cut to fit beside the other mods' counts.
 const peek = (text: string) => {
@@ -39,7 +60,7 @@ const stateText = async ($: Engine) => {
   const [list, isAuto] = await Promise.all([read($, items), read($, auto)])
   const count = list.length
   const jobs = isAuto && count ? (await read($, waiting)).length : 0
-  return [count && `${count} queued: ${peek(list[0]!)}`, isAuto && 'auto', isAuto && count && jobs && `waiting on ${jobs} bg`]
+  return [count && `${count} queued: ${peek(textOf(list[0]!))}`, isAuto && 'auto', isAuto && count && jobs && `waiting on ${jobs} bg`]
     .filter(Boolean)
     .join(' · ')
 }
@@ -55,47 +76,70 @@ const move = ($: Engine, i: number, by: -1 | 1) =>
 
 const removeAt = ($: Engine, i: number) => update($, items, list => list.filter((_, j) => j !== i))
 
-// Empty text removes the prompt.
+// Empty text removes the entry.
 const edit = ($: Engine, i: number, text: string) =>
-  text.trim() ? update($, items, list => list.map((t, j) => (j === i ? text.trim() : t))) : removeAt($, i)
+  text.trim() ? update($, items, list => list.map((item, j) => (j === i ? parseEntry(text) : item))) : removeAt($, i)
 
 // A hook cannot submit while it holds the turn; send once it has ended.
-const send = async ($: Engine, text: string) => {
+const send = async ($: Engine, item: QueueItem, onFail: () => Promise<unknown>) => {
   await update($, busy, () => true)
+  await update($, sending, () => true)
   $.clock.after(0, async () => {
     try {
-      await $.prompt.submit({ text, asUser: true })
+      if (item.kind === 'command') await $.command.run({ command: item.command, args: item.args })
+      else await $.prompt.submit({ text: item.text, asUser: true })
+
+      // A prompt starts a turn, which clears sending at turn.start; a command
+      // may start none, so the queue moves on by itself after one.
+      if (item.kind === 'command' && (await read($, sending))) {
+        await update($, busy, () => false)
+        await update($, sending, () => false)
+        await sendIfIdle($)
+      }
     } catch {
-      // A failed send started no turn, so nothing would clear the flag.
+      // A failed send started no turn, so nothing else would clear the flags.
       await update($, busy, () => false)
+      await update($, sending, () => false)
+      await onFail()
     }
   })
 }
 
-// Auto sends the next prompt only when no turn runs and no background job is left.
+// Auto sends the next entry only when no turn runs and no background job is left.
 const sendIfIdle = async ($: Engine) => {
   if ((await read($, busy)) || !(await read($, auto)) || (await read($, waiting)).length) return
   const [first] = await read($, items)
   if (first === undefined) return
   await update($, items, list => list.slice(1))
-  await send($, first)
+  await send($, first, async () => {
+    // Keep what could not be sent, at the front, and stop trying on its own.
+    await update($, items, list => [first, ...list])
+    await update($, auto, () => false)
+    $.ui.toast(`Queue paused: could not send "${peek(textOf(first))}". /queue-auto resumes.`)
+  })
 }
 
 const enqueue = async ($: Engine, text: string) => {
-  await update($, items, list => [...list, text])
+  await update($, items, list => [...list, parseEntry(text)])
   await sendIfIdle($)
 }
 
-const runAt = async ($: Engine, i: number, text: string) => {
+const runAt = async ($: Engine, i: number, item: QueueItem) => {
   await removeAt($, i)
-  await send($, text)
+  await send($, item, async () => {
+    await update($, items, list => {
+      const at = Math.min(i, list.length)
+      return [...list.slice(0, at), item, ...list.slice(at)]
+    })
+    $.ui.toast(`Could not send "${peek(textOf(item))}". It stays in the queue.`)
+  })
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'queue',
-      description: 'Park a prompt to run later (list, run, drop, clear)',
+      description: 'Park a prompt or command to run later (list, run, drop, clear)',
       immediate: true,
     })
     await $.command.register({
@@ -108,7 +152,10 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) await update($, busy, () => true)
+    if (e.agentId === undefined) {
+      await update($, busy, () => true)
+      await update($, sending, () => false)
+    }
 
     return next(e)
   })
@@ -155,7 +202,7 @@ export const register: Register = on => {
     if (!isOn) return { text: 'Queue auto is off.' }
     await sendIfIdle($)
 
-    return { text: 'Queue auto is on: prompts run after each task and its background jobs end.' }
+    return { text: 'Queue auto is on: entries run after each task and its background jobs end.' }
   })
 
   on('command.run', { command: 'queue' }, async ($, e) => {
@@ -176,7 +223,7 @@ export const register: Register = on => {
     const i = Number.isInteger(n) && n >= 1 && n <= list.length ? n - 1 : -1
 
     if (word === 'list') {
-      return { text: list.map((t, j) => `${j + 1}. ${t}`).join('\n') || 'Queue is empty.' }
+      return { text: list.map((item, j) => `${j + 1}. ${textOf(item)}`).join('\n') || 'Queue is empty.' }
     }
 
     if (word === 'clear') {
@@ -192,8 +239,8 @@ export const register: Register = on => {
 
     if (word === 'drop' || word === 'run') {
       if (i < 0) return { text: `No prompt ${arg || '1'}. Queue has ${list.length}.` }
-      await (word === 'run' ? runAt($, i, list[i]) : removeAt($, i))
-      return { text: `${word === 'run' ? 'Sending' : 'Dropped'}: ${list[i]}` }
+      await (word === 'run' ? runAt($, i, list[i]!) : removeAt($, i))
+      return { text: `${word === 'run' ? 'Sending' : 'Dropped'}: ${textOf(list[i]!)}` }
     }
 
     await enqueue($, args)
@@ -231,13 +278,13 @@ export const register: Register = on => {
         )}
         <Box marginTop={1} flexDirection="column">
           {list.length === 0 && <Text dimColor>Queue is empty.</Text>}
-          {list.map((t, i) => (
+          {list.map((item, i) => (
             <Box key={`row-${i}`} flexDirection="row">
               <Text>{i + 1}. </Text>
               {Input ? (
-                <Input key={`edit-${i}`} value={t} submitLabel="save" onSubmit={(v: string) => void edit($, i, v)} />
+                <Input key={`edit-${i}`} value={textOf(item)} submitLabel="save" onSubmit={(v: string) => void edit($, i, v)} />
               ) : (
-                <Text>{t}</Text>
+                <Text>{textOf(item)}</Text>
               )}
               <Text> </Text>
               <Button key={`up-${i}`} label="↑" plain dimColor onPress={() => move($, i, -1)} />
@@ -245,13 +292,13 @@ export const register: Register = on => {
               <Button key={`down-${i}`} label="↓" plain dimColor onPress={() => move($, i, 1)} />
               <Text> </Text>
               <Button key={`run-${i}`} label="▶" plain dimColor
-                onPress={() => void runAt($, i, t)} />
+                onPress={() => void runAt($, i, item)} />
               <Text> </Text>
               <Button key={`rm-${i}`} label="✕" plain dimColor onPress={() => removeAt($, i)} />
             </Box>
           ))}
         </Box>
-        <Text dimColor>Edit a prompt and press Enter to save; empty removes it. ▶ sends it now.</Text>
+        <Text dimColor>Edit an entry and press Enter to save; empty removes it. A leading / runs as a command. ▶ sends it now.</Text>
       </Box>
     )
   })

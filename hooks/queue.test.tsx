@@ -28,6 +28,54 @@ test('parks prompts and sends one on run', async ($, on) => {
   expect(empty.text).toBe('Queue is empty.')
 })
 
+test('a leading slash parks a command and runs it as a command', async ($, on) => {
+  const clock = mock.clock(on)
+  const sent: string[] = []
+  const ran: string[] = []
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  on('command.run', { command: 'review-pr' }, ($, e) => {
+    ran.push(e.args)
+    return { text: 'reviewed' }
+  })
+
+  await $.command.run({ command: 'queue', args: '/review-pr 123' })
+  await $.command.run({ command: 'queue-auto', args: '' })
+  await clock.advance(1)
+  expect(ran).toEqual(['123'])
+  expect(sent).toEqual([])
+
+  await $.turn.start({ turnId: 't' } as never)
+  await $.command.run({ command: 'queue', args: '/review-pr 456' })
+  const list = await $.command.run({ command: 'queue', args: 'list' })
+  expect(list.text).toBe('1. /review-pr 456')
+
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' })
+  await clock.advance(1)
+  expect(ran).toEqual(['123', '456'])
+  expect(sent).toEqual([])
+})
+
+test('a command that starts no turn lets the queue move on', async ($, on) => {
+  const clock = mock.clock(on)
+  const ran: string[] = []
+  on('command.run', { command: 'ping' }, () => {
+    ran.push('ping')
+    return { text: 'pong' }
+  })
+
+  await $.command.run({ command: 'queue', args: '/ping' })
+  await $.command.run({ command: 'queue', args: '/ping' })
+  await $.command.run({ command: 'queue-auto', args: '' })
+  await clock.advance(1)
+  await clock.advance(1000)
+  expect(ran).toEqual(['ping', 'ping'])
+})
+
 test('auto sends all prompts one by one and stays on', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
@@ -155,27 +203,34 @@ test('a prompt queued mid-task waits for the task to end', async ($, on) => {
   expect(sent).toEqual([])
 })
 
-test('a failed send does not leave auto stuck', async ($, on) => {
+test('a failed send keeps the prompt and stops auto', async ($, on) => {
   const clock = mock.clock(on)
   const sent: string[] = []
-  let isFirst = true
+  const toasts: string[] = []
+  let refuse = true
+  on('ui.toast', ($: any, e: any) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   on('turn.complete', () => ({ text: '' }))
   on('prompt.submit', ($, e) => {
-    if (isFirst) {
-      isFirst = false
-      throw new Error('submit refused')
-    }
+    if (refuse) throw new Error('submit refused')
     sent.push(e.text)
     return { text: e.text }
   })
 
   await $.command.run({ command: 'queue', args: 'a' })
-  await $.command.run({ command: 'queue', args: 'b' })
   await $.command.run({ command: 'queue-auto', args: '' })
   await clock.advance(1)
-  await $.command.run({ command: 'queue', args: 'c' })
+  const kept = await $.command.run({ command: 'queue', args: 'list' })
+  expect(kept.text).toBe('1. a')
+  expect(toasts).toEqual(['Queue paused: could not send "a". /queue-auto resumes.'])
+
+  // Auto stopped on its own; turning it back on sends what was kept.
+  refuse = false
+  await $.command.run({ command: 'queue-auto', args: '' })
   await clock.advance(1)
-  expect(sent).toEqual(['b'])
+  expect(sent).toEqual(['a'])
 })
 
 test('auto clears agents whose end arrives in another session message', async ($, on) => {
