@@ -26,20 +26,24 @@ const HELP = `/queue            open the panel: edit, reorder, run, remove
 /queue drop <n>   remove prompt n
 /queue clear      remove all
 /queue unblock    stop waiting on background jobs
+/queue-run [n]    send prompt n now (default 1)
 /queue-auto       toggle: run the queue after each task and its background jobs end`
 
-// The first line of a prompt, cut to fit beside the other mods' counts.
-const peek = (text: string) => {
+// The first line of a prompt, cut to `width` columns.
+const firstLine = (text: string, width: number) => {
   const line = text.split('\n')[0]!
-  return line.length > 30 ? `${line.slice(0, 29)}…` : line
+  return line.length > width ? `${line.slice(0, Math.max(width - 1, 1))}…` : line
 }
+
+// How many queued prompts the band above the prompt lists before "+N more".
+const SHOWN = 5
 
 // The state drawn dim in the band above the prompt.
 const stateText = async ($: Engine) => {
   const [list, isAuto] = await Promise.all([read($, items), read($, auto)])
   const count = list.length
   const jobs = isAuto && count ? (await read($, waiting)).length : 0
-  return [count && `${count} queued: ${peek(list[0]!)}`, isAuto && 'auto', isAuto && count && jobs && `waiting on ${jobs} bg`]
+  return [isAuto && 'auto', isAuto && count && jobs && `waiting on ${jobs} bg`]
     .filter(Boolean)
     .join(' · ')
 }
@@ -91,6 +95,15 @@ const runAt = async ($: Engine, i: number, text: string) => {
   await send($, text)
 }
 
+// /queue run [n] and /queue-run [n]: send prompt n (default 1) now.
+const runNth = async ($: Engine, arg: string) => {
+  const list = await read($, items)
+  const n = Number(arg || '1')
+  if (!(Number.isInteger(n) && n >= 1 && n <= list.length)) return { text: `No prompt ${arg || '1'}. Queue has ${list.length}.` }
+  await runAt($, n - 1, list[n - 1]!)
+  return { text: `Sending: ${list[n - 1]}` }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -101,6 +114,11 @@ export const register: Register = on => {
     await $.command.register({
       name: 'queue-auto',
       description: 'Toggle running the queue after each task and its background jobs end',
+      immediate: true,
+    })
+    await $.command.register({
+      name: 'queue-run',
+      description: 'Send the next queued prompt now (or prompt n)',
       immediate: true,
     })
 
@@ -149,6 +167,13 @@ export const register: Register = on => {
     return ended
   })
 
+  // Shortcut for /queue run [n].
+  on('command.run', { command: 'queue-run' }, async ($, e) => {
+    const n = e.args.trim()
+    if (n && !/^\d+$/.test(n)) return { text: 'Usage: /queue-run [n]' }
+    return runNth($, n)
+  })
+
   on('command.run', { command: 'queue-auto' }, async $ => {
     const isOn = !(await read($, auto))
     await update($, auto, () => isOn)
@@ -190,10 +215,12 @@ export const register: Register = on => {
       return { text: 'Stopped waiting on background jobs.' }
     }
 
-    if (word === 'drop' || word === 'run') {
+    if (word === 'run') return runNth($, arg)
+
+    if (word === 'drop') {
       if (i < 0) return { text: `No prompt ${arg || '1'}. Queue has ${list.length}.` }
-      await (word === 'run' ? runAt($, i, list[i]) : removeAt($, i))
-      return { text: `${word === 'run' ? 'Sending' : 'Dropped'}: ${list[i]}` }
+      await removeAt($, i)
+      return { text: `Dropped: ${list[i]}` }
     }
 
     await enqueue($, args)
@@ -201,15 +228,27 @@ export const register: Register = on => {
     return { text: `Queued #${list.length + 1}.` }
   })
 
-  // The state goes dim in the band above the prompt, in one row with what other mods draw there.
+  // Above the prompt: each queued prompt on its own line, then the dim state row,
+  // in one row with what other mods draw there.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const text = e.props.hasSurvey ? '' : await stateText($)
-    if (!text) return next(e)
+    if (e.props.hasSurvey) return next(e)
+    const [text, list] = await Promise.all([stateText($), read($, items)])
+    if (!text && !list.length) return next(e)
+    const width = Math.max((e.props.bodyColumns ?? 80) - 10, 20)
     const { Box, Text } = $.ui.resolve(e)
     return (
-      <Box flexDirection="row">
-        <Text dimColor>{text}   </Text>
-        {await next(e)}
+      <Box flexDirection="column">
+        {list.slice(0, SHOWN).map((t, i) => (
+          <Box key={`q-${i}`} flexDirection="row">
+            <Text color="#b8a77a">{`#${i + 1} `}</Text>
+            <Text color="#b8a77a">{firstLine(t, width)}</Text>
+          </Box>
+        ))}
+        {list.length > SHOWN && <Text dimColor>{`   +${list.length - SHOWN} more · /queue to see all`}</Text>}
+        <Box flexDirection="row">
+          {text && <Text dimColor>{text}   </Text>}
+          {await next(e)}
+        </Box>
       </Box>
     )
   })

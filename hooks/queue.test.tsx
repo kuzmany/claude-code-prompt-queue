@@ -237,7 +237,8 @@ test('panel edits, reorders, runs and removes; state shows above the prompt', as
   expect(await band(/queued/)).toBe(false)
   for (const t of ['a', 'b', 'c']) await $.command.run({ command: 'queue', args: t })
   expect((await $.command.run({ command: 'queue', args: '' })).text).toBe('Queue panel opened.')
-  expect(await band(/^3 queued: a/)).toBe(true)
+  expect(await band(/^a$/)).toBe(true)
+  expect(await band(/^c$/)).toBe(true)
 
   const ui = await $.ui.mount({ plugin: 'prompt-queue', surface: 'terminal', component: 'Pane', requestId: 'queue',
     props: { title: 'Queue', isFocused: true, bodyColumns: 100, placement: 'dock' } } as any)
@@ -253,6 +254,21 @@ test('panel edits, reorders, runs and removes; state shows above the prompt', as
   expect(await list()).toBe('1. a2\n2. d')
   await ui.input({ key: 'edit-0', text: '' })
   expect(await list()).toBe('1. d')
-  expect(await band(/^1 queued: d/)).toBe(true)
+  expect(await band(/^d$/)).toBe(true)
   await ui.unmount()
+})
+
+test('/queue-run sends the next prompt', async ($, on) => {
+  const clock = mock.clock(on)
+  const sent: string[] = []
+  on('prompt.submit', ($, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  for (const t of ['a', 'b']) await $.command.run({ command: 'queue', args: t })
+  expect((await $.command.run({ command: 'queue-run', args: '' })).text).toBe('Sending: a')
+  await clock.advance(1)
+  expect(sent).toEqual(['a'])
+  expect((await $.command.run({ command: 'queue', args: 'list' })).text).toBe('1. b')
+  expect((await $.command.run({ command: 'queue-run', args: 'x' })).text).toBe('Usage: /queue-run [n]')
 })
