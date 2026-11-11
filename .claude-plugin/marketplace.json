@@ -1,6 +1,6 @@
 {
   "name": "prompt-queue",
-  "description": "Prompt queue for Claude Code: park prompts and run them after each task.",
+  "description": "Prompt queue for Claude Code: park prompts and slash commands and run them after each task.",
   "owner": {
     "name": "Zdeno Kuzmany",
     "url": "https://github.com/kuzmany"
@@ -9,7 +9,7 @@
     {
       "name": "prompt-queue",
       "source": "./",
-      "description": "Queue prompts with /queue and run them one by one after each task and its background jobs finish.",
+      "description": "Queue prompts and slash commands with /queue and run them one by one after each task and its background jobs finish.",
       "category": "productivity",
       "keywords": [
         "prompt-queue",
