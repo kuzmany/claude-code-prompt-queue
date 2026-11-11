@@ -95,13 +95,20 @@ const runAt = async ($: Engine, i: number, text: string) => {
   await send($, text)
 }
 
-// /queue run [n] and /queue-run [n]: send prompt n (default 1) now.
-const runNth = async ($: Engine, arg: string) => {
+// The index of prompt `arg` (1-based, default 1), or an error reply.
+const pick = async ($: Engine, arg: string) => {
   const list = await read($, items)
   const n = Number(arg || '1')
-  if (!(Number.isInteger(n) && n >= 1 && n <= list.length)) return { text: `No prompt ${arg || '1'}. Queue has ${list.length}.` }
-  await runAt($, n - 1, list[n - 1]!)
-  return { text: `Sending: ${list[n - 1]}` }
+  if (Number.isInteger(n) && n >= 1 && n <= list.length) return { i: n - 1, text: list[n - 1]! }
+  return { error: `No prompt ${arg || '1'}. Queue has ${list.length}.` }
+}
+
+// /queue run [n] and /queue-run [n]: send prompt n (default 1) now.
+const runNth = async ($: Engine, arg: string) => {
+  const p = await pick($, arg)
+  if ('error' in p) return { text: p.error }
+  await runAt($, p.i, p.text)
+  return { text: `Sending: ${p.text}` }
 }
 
 export const register: Register = on => {
@@ -197,8 +204,6 @@ export const register: Register = on => {
     }
 
     const list = await read($, items)
-    const n = Number(arg || '1')
-    const i = Number.isInteger(n) && n >= 1 && n <= list.length ? n - 1 : -1
 
     if (word === 'list') {
       return { text: list.map((t, j) => `${j + 1}. ${t}`).join('\n') || 'Queue is empty.' }
@@ -218,9 +223,10 @@ export const register: Register = on => {
     if (word === 'run') return runNth($, arg)
 
     if (word === 'drop') {
-      if (i < 0) return { text: `No prompt ${arg || '1'}. Queue has ${list.length}.` }
-      await removeAt($, i)
-      return { text: `Dropped: ${list[i]}` }
+      const p = await pick($, arg)
+      if ('error' in p) return { text: p.error }
+      await removeAt($, p.i)
+      return { text: `Dropped: ${p.text}` }
     }
 
     await enqueue($, args)

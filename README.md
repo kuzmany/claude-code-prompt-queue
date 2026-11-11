@@ -4,6 +4,8 @@ Queue up your next prompts while Claude is still working. Run them later, by han
 
 Claude Code's own queue sends your message into the running task. This mod holds prompts back until you want them.
 
+Tested with Claude Code 2.1.322. It is a Claude Mod (a plugin with a hooks module), so it needs a Claude Code build that runs mods.
+
 ## Install
 
 At the Claude Code prompt:
@@ -21,6 +23,19 @@ claude plugin install prompt-queue --marketplace kuzmany/claude-code-prompt-queu
 ```
 
 In the desktop app: click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `kuzmany/claude-code-prompt-queue`, then **Add plugin**.
+
+Update to the latest version:
+
+```
+claude plugin marketplace update prompt-queue
+claude plugin update prompt-queue@prompt-queue
+```
+
+Remove it:
+
+```
+claude plugin uninstall prompt-queue@prompt-queue
+```
 
 ## Use
 
@@ -56,6 +71,18 @@ If auto keeps waiting on a job that already ended (for example one a subagent st
 ```
 
 Claude finishes the test run, then fixes the tests, then updates the changelog.
+
+## Development
+
+```
+git clone https://github.com/kuzmany/claude-code-prompt-queue
+cd claude-code-prompt-queue
+claude plugin validate .
+claude plugin test
+claude --plugin-dir .
+```
+
+`claude plugin test` runs `hooks/queue.test.tsx` with no session and no network. `claude --plugin-dir .` loads your checkout; saving `hooks/register.tsx` reloads it.
 
 ## License
 

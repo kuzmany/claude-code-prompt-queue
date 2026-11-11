@@ -12,8 +12,13 @@
       "description": "Queue prompts with /queue and run them one by one after each task and its background jobs finish.",
       "category": "productivity",
       "keywords": [
+        "claude-code",
+        "claude-code-plugin",
+        "claude-mod",
         "prompt-queue",
         "queue",
+        "task-queue",
+        "slash-command",
         "automation",
         "productivity"
       ]
